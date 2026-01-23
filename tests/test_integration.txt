@@ -1,0 +1,57 @@
+# tests/handlers/test_crawler_handler.py
+import pytest
+from unittest.mock import patch, MagicMock
+
+from pydpiper_shell.core.handlers.crawler_handler import handle_crawler
+from pydpiper_shell.core.context.shell_context import ShellContext
+from pydpiper_shell.model import Project
+
+
+@pytest.fixture
+def mock_context():
+    """Fixture that provides a context with a mocked ProjectManager."""
+    ctx = ShellContext()
+    ctx.project_manager = MagicMock()
+    ctx.cache_mgr = MagicMock()
+    return ctx
+
+
+# The test is synchronous because the function we are testing is synchronous.
+@patch('pydpiper_shell.core.handlers.crawler_handler.run_on_main_loop')
+@patch('pydpiper_shell.core.handlers.crawler_handler.AsyncCrawlController')
+def test_crawler_run_success(MockCrawlController, MockRunOnMainLoop, mock_context, capsys):
+    """Test 'crawler run' for a valid project."""
+    # Arrange
+    test_project = Project(id=1, name="test.com", start_url="https://test.com")
+    mock_context.project_manager.get_project.return_value = test_project
+
+    # The controller's .run() method returns a specific object we can identify.
+    mock_controller_instance = MagicMock()
+    # This simulates the creation of the coroutine object.
+    coroutine_object = "THE_CORRECT_COROUTINE_OBJECT"
+    mock_controller_instance.run.return_value = coroutine_object
+    MockCrawlController.return_value = mock_controller_instance
+
+    # We don't care about the return value of the loop runner in this test,
+    # just that it's called correctly. Let it return a success code.
+    MockRunOnMainLoop.return_value = 0
+
+    # Act
+    args = ["run", "--project", "1", "--max-pages", "100"]
+    exit_code = handle_crawler(args, mock_context)
+
+    # Assert
+    assert exit_code == 0
+    mock_context.project_manager.get_project.assert_called_once_with(1)
+    mock_context.cache_mgr.clear_data.assert_called_once_with(1)
+    MockCrawlController.assert_called_once()
+
+    # THE CRITICAL ASSERTION:
+    # Was run_on_main_loop called with the coroutine object we created?
+    MockRunOnMainLoop.assert_called_once_with(coroutine_object)
+
+    # Verify that the .run() method was called to create the coroutine.
+    mock_controller_instance.run.assert_called_once()
+
+    captured = capsys.readouterr()
+    assert "Starting crawl for project 'test.com'" in caplog.text

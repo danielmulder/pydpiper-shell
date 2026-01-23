@@ -1,0 +1,48 @@
+{
+  "strict_mode": {
+    "strict": true
+  },
+  "debug": {
+    "level": "INFO"
+  },
+  "robots_txt": {
+    "enabled": true
+  },
+  "user_agent": {
+    "chrome_version": "120.0.0.0"
+  },
+  "crawler": {
+    "default_max_pages": 5000,
+    "flush_interval": 5,
+    "propagate_link_status": true,
+    "resp_robots_meta_tags": true,
+    "resp_link_nofollow": true,
+    "skip_save": false
+  },
+  "session": {
+    "concurrency": 25,
+    "time_out": 10,
+    "total_retries": 1,
+    "backoff_factor": 0.5,
+    "max_redirects": 5,
+    "consecutive_429": 0,
+    "current_backoff": 3,
+    "max_backoff": 8,
+    "up_damping_factor": 0.025
+  },
+  "link_checker": {
+    "concurrency": 300,
+    "timeout": 3,
+    "retries": 1,
+    "backoff_factor": 0.5
+  },
+  "query_service": {
+    "max_qurp": 20
+  },
+   "autocomplete": {
+    "h_max_len": 15
+  },
+    "parser": {
+    "parse_img": true
+  }
+}

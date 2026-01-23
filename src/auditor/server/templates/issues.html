@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PydPiper Issues Overview</title>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jstree/3.3.12/themes/default/style.min.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jstree/3.3.12/jstree.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/remixicon@2.5.0/fonts/remixicon.css" rel="stylesheet">
+
+    <style>
+        :root { --sidebar-width: 400px; --primary-color: #2c3e50; --bg-color: #f4f6f9; --border-color: #e1e4e8; }
+        body { font-family: 'Segoe UI', sans-serif; margin: 0; display: flex; height: 100vh; overflow: hidden; background: var(--bg-color); }
+
+        #sidebar { width: var(--sidebar-width); background: white; border-right: 1px solid var(--border-color); display: flex; flex-direction: column; }
+        .sidebar-header { padding: 15px; border-bottom: 1px solid var(--border-color); background: #f8f9fa; display:flex; justify-content:space-between; align-items:center; }
+        .sidebar-content { flex: 1; overflow-y: auto; padding: 10px; }
+        .search-box { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
+
+        #content { flex: 1; overflow-y: auto; padding: 30px; }
+        .card { background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); padding: 20px; margin-bottom: 20px; }
+        .header-card { display: flex; justify-content: space-between; align-items: center; }
+
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { text-align: left; padding: 12px; border-bottom: 1px solid var(--border-color); vertical-align: top; }
+        th { background-color: #f8f9fa; color: #666; font-weight: 600; font-size: 0.9em; }
+
+        .text-danger { color: #dc3545 !important; }
+        .text-warning { color: #ffc107 !important; }
+        .text-info { color: #3498db !important; }
+
+        .nav-btn { text-decoration: none; padding: 8px 12px; background: #eef2f7; border-radius: 5px; color: var(--primary-color); font-weight: 600; font-size: 0.9em; border: none; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
+        .nav-btn:hover { background: #dfe6ed; }
+
+        a { text-decoration: none; color: #3498db; }
+        a:hover { text-decoration: underline; }
+
+        /* --- NEW STYLES FOR DASHBOARD / CATEGORY REPORT --- */
+        .stats-grid { display: flex; gap: 20px; margin-bottom: 20px; }
+        .stat-card { flex: 1; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border-left: 4px solid transparent; }
+        .stat-card h4 { margin: 0 0 5px 0; font-size: 0.8em; text-transform: uppercase; color: #888; letter-spacing: 0.5px; }
+        .stat-card .value { font-size: 2em; font-weight: bold; color: #2c3e50; }
+
+        .stat-card.total { border-left-color: #2c3e50; }
+        .stat-card.critical { border-left-color: #dc3545; }
+        .stat-card.warning { border-left-color: #ffc107; }
+
+        .progress-container { background: #eee; height: 8px; border-radius: 4px; width: 100px; overflow: hidden; display: inline-block; vertical-align: middle; margin-right: 10px; }
+        .progress-bar { height: 100%; }
+
+        .badge { padding: 4px 8px; border-radius: 12px; font-size: 0.75em; font-weight: bold; text-transform: uppercase; }
+        .badge-critical { background: #ffecec; color: #dc3545; }
+        .badge-warning { background: #fff8dd; color: #ffc107; }
+        .badge-info { background: #e3f2fd; color: #3498db; }
+
+    </style>
+</head>
+<body>
+
+<div id="sidebar">
+    <div class="sidebar-header">
+        <h3 style="margin:0;">🐞 Issue Explorer</h3>
+        <div style="display: flex; gap: 5px;">
+            <a href="/api/export" class="nav-btn" title="Download Full Report CSV">
+                <i class="ri-download-line"></i> CSV
+            </a>
+            <a href="/" class="nav-btn" title="Back to Site View">
+                <i class="ri-arrow-left-line"></i>
+            </a>
+        </div>
+    </div>
+    <div style="padding: 10px 10px 0 10px;">
+        <input type="text" id="tree_q" class="search-box" placeholder="Search Issue...">
+    </div>
+    <div class="sidebar-content">
+        <div id="jstree_demo"></div>
+    </div>
+</div>
+
+<div id="content">
+    <div id="dashboard">
+        <!-- PLACEHOLDER STATE -->
+        <div id="details_placeholder" style="text-align: center; color: #aaa; margin-top: 100px;">
+            <i class="ri-price-tag-3-line" style="font-size: 4em;"></i>
+            <h2>Select a category or issue to view details</h2>
+        </div>
+
+        <!-- CATEGORY AGGREGATED REPORT VIEW -->
+        <div id="category_report" style="display:none;">
+            <div class="card header-card">
+                <div>
+                    <!-- Use .html() in JS to render the span correctly -->
+                    <h1 style="margin:0;"><i class="ri-folder-open-line text-info"></i> <span id="cat_report_title">Category</span></h1>
+                    <p style="margin:5px 0 0 0; color:#666;">Aggregated statistics for this category</p>
+                </div>
+            </div>
+
+            <!-- Stats Row -->
+            <div class="stats-grid">
+                <div class="stat-card total">
+                    <h4>Total Issues</h4>
+                    <div class="value" id="stat_total">0</div>
+                </div>
+                <div class="stat-card critical">
+                    <h4>Critical Errors</h4>
+                    <div class="value" id="stat_critical" style="color: #dc3545">0</div>
+                </div>
+                <div class="stat-card warning">
+                    <h4>Warnings</h4>
+                    <div class="value" id="stat_warning" style="color: #ffc107">0</div>
+                </div>
+            </div>
+
+            <!-- Issue Breakdown -->
+            <div class="card">
+                <h3>Issue Breakdown</h3>
+                <table id="cat_breakdown_table">
+                    <thead>
+                        <tr>
+                            <th width="100">Severity</th>
+                            <th>Issue Code</th>
+                            <th>Distribution</th>
+                            <th width="80" style="text-align:right;">Count</th>
+                            <th width="50">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- SINGLE ISSUE DETAIL VIEW -->
+        <div id="issue_details" style="display:none;">
+            <div class="card header-card">
+                <div>
+                    <h2 style="margin-top:0;"><span id="issue_code"></span></h2>
+                    <p><strong>Category:</strong> <span id="issue_cat"></span></p>
+                </div>
+                <button onclick="window.location.href='/api/export'" class="nav-btn" style="background-color:#28a745; color:white;">
+                    <i class="ri-download-2-line"></i> Download Full Report
+                </button>
+            </div>
+
+            <div class="card">
+                <p style="margin-bottom: 15px;">Showing affected pages:</p>
+                <table id="urls_table">
+                    <thead><tr><th width="50">ID</th><th width="300">URL</th><th width="60">Stat</th><th>Specific Message / Context</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    $(document).ready(function() {
+        let treeInstance = null;
+
+        // --- FIXED EVENT LISTENER ---
+        // We now use tree.deselect_all() to ensure the selection actually switches contexts.
+        $(document).on('click', '.view-issue-btn', function(e) {
+            e.preventDefault(); // Prevent any default button behavior
+            e.stopPropagation(); // Stop bubbling
+
+            // Use .attr() to get the exact string value, avoiding jQuery type casting on numeric IDs
+            var nodeId = $(this).attr('data-node-id');
+            var tree = $('#jstree_demo').jstree(true);
+
+            if(nodeId && tree) {
+                tree.deselect_all(); // CRITICAL: Clear current selection (the category)
+                tree.reveal_node(nodeId); // Expand tree to show the node
+                tree.select_node(nodeId); // Select the new node, triggering changed.jstree
+            }
+        });
+
+        $.get("/api/issues/tree", function(data) {
+            initTree(data);
+        });
+
+        function initTree(data) {
+            $('#jstree_demo').jstree({
+                'core': { 'data': data, 'themes': { 'responsive': false } },
+                "plugins" : [ "search", "types" ]
+            }).on('ready.jstree', function(e, data) {
+                treeInstance = $('#jstree_demo').jstree(true);
+            });
+
+            var to = false;
+            $('#tree_q').keyup(function () {
+                if(to) { clearTimeout(to); }
+                to = setTimeout(function () {
+                    var v = $('#tree_q').val();
+                    $('#jstree_demo').jstree(true).search(v);
+                }, 250);
+            });
+
+            $('#jstree_demo').on("changed.jstree", function (e, data) {
+                if(data.selected.length) {
+                    var node = data.instance.get_node(data.selected[0]);
+
+                    if (node.data && node.data.type === 'issue') {
+                        loadIssueDetails(node.data.category, node.data.code);
+                    } else {
+                        loadCategoryReport(node);
+                    }
+                }
+            });
+        }
+
+        function loadCategoryReport(node) {
+            $('#details_placeholder').hide();
+            $('#issue_details').hide();
+            $('#category_report').show();
+
+            $('#cat_report_title').html(node.text);
+
+            var total = 0;
+            var critical = 0;
+            var warning = 0;
+            var issues = [];
+
+            var childrenIds = node.children;
+
+            childrenIds.forEach(function(id) {
+                var childNode = $('#jstree_demo').jstree(true).get_node(id);
+                if (!childNode) return;
+
+                var text = childNode.text;
+
+                var countMatch = text.match(/[\[\(](\d+)[\]\)]/);
+                var count = countMatch ? parseInt(countMatch[1]) : 0;
+
+                var severity = 'INFO';
+                if (childNode.icon && childNode.icon.includes('danger')) severity = 'CRITICAL';
+                else if (childNode.icon && childNode.icon.includes('warning')) severity = 'WARNING';
+
+                if (text.includes('MISSING') || text.includes('BROKEN')) severity = 'CRITICAL';
+                else if (text.includes('EMPTY') || text.includes('TOO')) severity = 'WARNING';
+
+                if (severity === 'CRITICAL') critical += count;
+                if (severity === 'WARNING') warning += count;
+                total += count;
+
+                issues.push({
+                    code: text.replace(/[\[\(]\d+[\]\)]/, '').trim(),
+                    count: count,
+                    severity: severity,
+                    id: id
+                });
+            });
+
+            $('#stat_total').text(total);
+            $('#stat_critical').text(critical);
+            $('#stat_warning').text(warning);
+
+            var tbody = $('#cat_breakdown_table tbody');
+            tbody.empty();
+
+            issues.sort((a, b) => b.count - a.count);
+
+            issues.forEach(function(issue) {
+                var badgeClass = 'badge-info';
+                if(issue.severity === 'CRITICAL') badgeClass = 'badge-critical';
+                if(issue.severity === 'WARNING') badgeClass = 'badge-warning';
+
+                var percent = total > 0 ? Math.round((issue.count / total) * 100) : 0;
+                var barColor = issue.severity === 'CRITICAL' ? '#dc3545' : (issue.severity === 'WARNING' ? '#ffc107' : '#3498db');
+
+                var tr = `
+                    <tr>
+                        <td><span class="badge ${badgeClass}">${issue.severity}</span></td>
+                        <td style="font-weight:500;">${issue.code}</td>
+                        <td>
+                            <div class="progress-container">
+                                <div class="progress-bar" style="width: ${percent}%; background-color: ${barColor};"></div>
+                            </div>
+                            <span style="font-size:0.85em; color:#888;">${percent}%</span>
+                        </td>
+                        <td style="text-align:right; font-weight:bold;">${issue.count}</td>
+                        <td>
+                            <button class="nav-btn view-issue-btn" type="button" style="padding:2px 6px; font-size:0.8em;" data-node-id="${issue.id}">
+                                View
+                            </button>
+                        </td>
+                    </tr>
+                `;
+                tbody.append(tr);
+            });
+        }
+
+        function loadIssueDetails(cat, code) {
+            $('#details_placeholder').hide();
+            $('#category_report').hide();
+            $('#issue_details').show();
+
+            $('#issue_code').text(code);
+            $('#issue_cat').text(cat);
+            $('#urls_table tbody').html('<tr><td colspan="4" style="padding:20px; text-align:center; color:#888;"><i class="ri-loader-4-line ri-spin"></i> Loading details...</td></tr>');
+
+            $.get(`/api/issues/urls?cat=${encodeURIComponent(cat)}&code=${encodeURIComponent(code)}`, function(data) {
+                var tbody = $('#urls_table tbody');
+                tbody.empty();
+
+                if (data.length === 0) {
+                    tbody.append('<tr><td colspan="4" style="text-align:center; padding:20px;">No pages found.</td></tr>');
+                    return;
+                }
+
+                data.forEach(function(row) {
+                    var statColor = row.status_code >= 400 ? 'red' : (row.status_code >= 300 ? 'orange' : 'green');
+                    var statBadge = `<span style="font-weight:bold; color:${statColor}">${row.status_code}</span>`;
+
+                    var tr = `<tr>
+                        <td style="color:#999; font-size:0.85em;">${row.id}</td>
+                        <td><a href="${row.url}" target="_blank" style="display:block; max-width:280px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${row.url} <i class="ri-external-link-line" style="font-size:0.8em"></i></a></td>
+                        <td>${statBadge}</td>
+                        <td style="color:#444;">${row.message}</td>
+                    </tr>`;
+                    tbody.append(tr);
+                });
+            });
+        }
+    });
+</script>
+</body>
+</html>

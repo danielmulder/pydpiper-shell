@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Audit Configuration</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/remixicon@2.5.0/fonts/remixicon.css" rel="stylesheet">
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #f4f6f9; padding: 20px; color: #333; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        h1 { margin-top: 0; border-bottom: 1px solid #eee; padding-bottom: 15px; display: flex; align-items: center; gap: 10px; }
+
+        .info-box { background: #eef2f7; padding: 15px; border-radius: 5px; margin-bottom: 20px; border-left: 4px solid #3498db; }
+
+        .code-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; margin-top: 20px; }
+        .code-item { background: #f8f9fa; padding: 10px; border-radius: 4px; border: 1px solid #ddd; display: flex; align-items: center; cursor: pointer; transition: background 0.2s; }
+        .code-item:hover { background: #e9ecef; }
+        .code-item input { margin-right: 10px; transform: scale(1.2); cursor: pointer; }
+        .code-text { font-family: 'Consolas', monospace; font-weight: bold; color: #555; }
+
+        .actions { margin-top: 30px; text-align: right; border-top: 1px solid #eee; padding-top: 20px; }
+        button, .btn { padding: 10px 20px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; font-size: 14px; text-decoration: none; display: inline-block; }
+        .btn-save { background: #28a745; color: white; border: 1px solid #218838; }
+        .btn-save:hover { background: #218838; }
+        .btn-back { background: #6c757d; color: white; margin-right: 10px; border: 1px solid #545b62; }
+        .btn-back:hover { background: #5a6268; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1><i class="ri-settings-3-line"></i> Report Configuration</h1>
+
+        <div class="info-box">
+            <p style="margin:0;">
+                <i class="ri-information-fill" style="color:#3498db"></i>
+                Uncheck the issues you want to <strong>hide</strong> from the report views.
+                The data remains in the database, but will be excluded from the Tree and Issue views.
+            </p>
+        </div>
+
+        <div class="code-list" id="list">
+            <div style="padding:20px; text-align:center; color:#999; grid-column: 1/-1;">
+                <i class="ri-loader-4-line ri-spin" style="font-size:2em;"></i><br>Loading configuration...
+            </div>
+        </div>
+
+        <div class="actions">
+            <a href="/" class="btn btn-back">Back to Report</a>
+            <button onclick="saveConfig()" class="btn btn-save">Save Configuration</button>
+        </div>
+    </div>
+
+    <script>
+        $(document).ready(function() {
+            $.get("/api/config", function(data) {
+                var container = $('#list');
+                container.empty();
+
+                if (data.all_codes.length === 0) {
+                    container.html('<div style="grid-column:1/-1; text-align:center;">No issue codes found yet. Run an audit first!</div>');
+                    return;
+                }
+
+                data.all_codes.forEach(function(code) {
+                    // Checkbox is CHECKED als hij NIET in de hidden lijst staat
+                    var isChecked = !data.hidden_codes.includes(code);
+                    var item = `
+                        <label class="code-item">
+                            <input type="checkbox" value="${code}" ${isChecked ? 'checked' : ''}>
+                            <span class="code-text">${code}</span>
+                        </label>
+                    `;
+                    container.append(item);
+                });
+            });
+        });
+
+        function saveConfig() {
+            var hidden = [];
+            // Verzamel alle NIET aangevinkte items (die moeten hidden worden)
+            $('input[type=checkbox]').each(function() {
+                if (!$(this).is(':checked')) {
+                    hidden.push($(this).val());
+                }
+            });
+
+            $.ajax({
+                url: '/api/config',
+                type: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({ hidden: hidden }),
+                success: function() {
+                    alert('Configuration saved! You can now return to the report.');
+                    window.location.href = '/';
+                },
+                error: function(err) {
+                    alert('Error saving: ' + JSON.stringify(err));
+                }
+            });
+        }
+    </script>
+</body>
+</html>

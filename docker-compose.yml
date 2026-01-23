@@ -1,0 +1,14 @@
+services:
+  pydpiper:
+    build: .
+    image: pydpiper-master:latest
+    container_name: pydpiper-shell
+    # Map the Studio port so you can see those beautiful reports
+    ports:
+      - "5000:5000"
+    # Persistent storage: your projects stay alive even if the container dies
+    volumes:
+      - ./.pydpiper_cache:/app/.pydpiper_cache
+    # Interactive mode enabled for the PydPiper>> prompt
+    stdin_open: true
+    tty: true

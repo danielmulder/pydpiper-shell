@@ -1,0 +1,24 @@
+# Negeer Python virtuele omgevingen en caches
+.venv/
+__pycache__/
+*.pyc
+.pydpiper_cache/
+.env
+
+# Negeer IDE en Git rommel (de 1.1GB boosdoeners)
+.git/
+.idea/
+.vscode/
+
+# Negeer build artefacten en egg-info
+*.egg-info/
+build/
+dist/
+
+# Negeer lokale test- en rommelbestanden
+speed.py
+urllist.csv
+urls.csv
+test_db_retrieval.py
+qodana.yaml
+del_caches.ps1

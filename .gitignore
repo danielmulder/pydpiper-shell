@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+env/
+.env
+
+# PydPiper Data & Logs
+.pydpiper_cache/
+*.log
+
+# Project rommel
+.idea/
+.vscode/
+src/*.egg-info/
+
+# Losse test files
+speed.py
+urllist.csv
+urls.csv
+test_db_retrieval.py
+qodana.yaml
+del_caches.ps1
