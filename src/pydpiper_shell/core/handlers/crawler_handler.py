@@ -18,9 +18,23 @@ from crawler.utils.url_utils import UrlUtils
 
 logger = logging.getLogger(__name__)
 
+# --- HELP TEXT ---
+
+crawler_help_text = """
+  crawler run [<target>] [--max-pages <n>] [--sanitize] [--page-filter <name>]
+                      Executes a crawl. <target> can be a Project ID or a URL.
+                      If no target is provided, the active project is used.
+
+  crawler test request
+                      Performs a diagnostic HTTP request to verify headers 
+                      and connectivity.
+""".strip()
+
+
+# --- TASK HELPERS ---
 
 async def _run_crawl_task(
-    project: Project, args: argparse.Namespace, ctx: ShellContext
+        project: Project, args: argparse.Namespace, ctx: ShellContext
 ) -> AsyncCrawlController:
     """
     Async task that orchestrates the crawl execution via the AsyncCrawlController.
@@ -207,26 +221,26 @@ def handle_crawler(args: List[str], ctx: ShellContext, _stdin: Optional[str] = N
     Main entry point for crawler commands.
     Parses arguments and dispatches to specific sub-handlers.
     """
-    parser = argparse.ArgumentParser(prog="crawler", description="Manage crawls.")
-    subparsers = parser.add_subparsers(dest="subcommand", help="Sub-command help")
+    parser = argparse.ArgumentParser(prog="crawler", description="Manage crawls.", add_help=False)
+    subparsers = parser.add_subparsers(dest="subcommand")
 
     # Command: crawler run
-    run_parser = subparsers.add_parser("run", help="Run a crawl.")
-    run_parser.add_argument("target", nargs="?", help="Project ID or URL.")
-    run_parser.add_argument("--project", type=int, help="Explicit project ID.")
-    run_parser.add_argument("--max-pages", type=int, help="Limit maximum pages to crawl.")
-    run_parser.add_argument("--sanitize", action="store_true", help="Clean HTML content.")
-    run_parser.add_argument("--page-filter", choices=list(FilterRegistry.keys()), help="Apply a page filter.")
+    run_parser = subparsers.add_parser("run", add_help=False)
+    run_parser.add_argument("target", nargs="?")
+    run_parser.add_argument("--project", type=int)
+    run_parser.add_argument("--max-pages", type=int)
+    run_parser.add_argument("--sanitize", action="store_true")
+    run_parser.add_argument("--page-filter", choices=list(FilterRegistry.keys()))
     run_parser.set_defaults(func=_handle_run)
 
     # Command: crawler test
-    test_parser = subparsers.add_parser("test", help="Run diagnostic tests.")
+    test_parser = subparsers.add_parser("test", add_help=False)
     test_subs = test_parser.add_subparsers(dest="test_type")
-    req_parser = test_subs.add_parser("request", help="Test HTTP headers.")
+    req_parser = test_subs.add_parser("request", add_help=False)
     req_parser.set_defaults(func=_handle_test_request)
 
-    if not args:
-        parser.print_help()
+    if not args or args[0] in ["help", "-h", "--help"]:
+        print(crawler_help_text)
         return 0
 
     try:
@@ -234,9 +248,11 @@ def handle_crawler(args: List[str], ctx: ShellContext, _stdin: Optional[str] = N
         if hasattr(parsed_args, "func"):
             return parsed_args.func(parsed_args, ctx)
         else:
-            parser.print_help()
+            print(crawler_help_text)
             return 1
     except SystemExit:
+        # Argparse calls sys.exit() on error or help; catch it and show custom help
+        print(crawler_help_text)
         return 1
     except Exception as e:
         logger.error(f"Crawler command failed: {e}", exc_info=True)

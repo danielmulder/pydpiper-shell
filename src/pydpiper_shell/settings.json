@@ -3,7 +3,7 @@
     "strict": true
   },
   "debug": {
-    "level": "INFO"
+    "level": "DEBUG"
   },
   "robots_txt": {
     "enabled": true
@@ -20,7 +20,7 @@
     "skip_save": false
   },
   "session": {
-    "concurrency": 25,
+    "concurrency": 55,
     "time_out": 10,
     "total_retries": 1,
     "backoff_factor": 0.5,

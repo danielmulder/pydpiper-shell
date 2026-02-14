@@ -1,9 +1,10 @@
 import asyncio
 import logging
 import re
+import io
+import xml.etree.ElementTree as ET
 from typing import Optional, List, Dict, Any
-
-from pydantic import ValidationError
+from bs4 import BeautifulSoup
 
 from crawler.utils.url_utils import UrlUtils
 from crawler.utils.run_timers import RunTimers
@@ -18,20 +19,15 @@ from crawler.services.link_processor_service import LinkProcessorService
 from crawler.services.robots_txt_service import RobotsTxtService
 from pydpiper_shell.core.managers.config_manager import config_manager
 from pydpiper_shell.core.managers.database_manager import DatabaseManager
+from pydpiper_shell.core.filter_registry import filter_registry
+from pydpiper_shell.core.filter_registry import register_all_filters
 
 logger = logging.getLogger(__name__)
 
 
 class AsyncCrawlController(AsyncController):
     """
-    High-Performance Async Crawler Controller.
-
-    This controller orchestrates the crawling process using a hybrid approach:
-    1.  **Fast Engine:** Uses `PageFetcher` (aiohttp) for high-concurrency downloads.
-    2.  **DB Persistence:** Asynchronously saves data to SQLite via `CrawlDataManager`.
-    3.  **Turbo Logic:** Uses compiled Regex for meta-tag checks to avoid costly DOM parsing.
-
-    It manages the URL queue, worker tasks, data buffering, and periodic database flushing.
+    High-Performance Async Crawler met Sitemap-ondersteuning en Page Filtering.
     """
 
     def __init__(
@@ -40,26 +36,12 @@ class AsyncCrawlController(AsyncController):
             start_url: str,
             run_mode: str,
             db_manager: DatabaseManager,
-            cache_manager: Optional[Any] = None,  # For signature compatibility
+            cache_manager: Optional[Any] = None,
             config: Optional[Dict] = None,
             strict_mode: bool = True,
             respect_robots_txt: bool = False,
             page_filter_name: Optional[str] = None,
     ):
-        """
-        Initialize the controller with project settings and managers.
-
-        Args:
-            project_id: The ID of the current project.
-            start_url: The entry point URL for the crawl.
-            run_mode: The execution mode (e.g., 'discovery', 'sitemap').
-            db_manager: The database manager instance for persistence.
-            cache_manager: Legacy cache manager (unused, kept for compatibility).
-            config: Optional configuration dictionary.
-            strict_mode: If True, enforces stricter validation on links.
-            respect_robots_txt: If True, checks robots.txt before fetching.
-            page_filter_name: Optional name of a page filter to apply.
-        """
         super().__init__()
         self.config = config or {}
         self.project_id = project_id
@@ -74,6 +56,13 @@ class AsyncCrawlController(AsyncController):
         self.url_utils = UrlUtils()
         self.user_agent = generate_default_user_agent()
 
+        # Page Filter Laden
+        self.page_filter_class = None
+        if page_filter_name:
+            self.page_filter_class = filter_registry.get_filter(page_filter_name)
+            if self.page_filter_class:
+                logger.info(f"Page filter geactiveerd: {page_filter_name}")
+
         self.page_fetcher = PageFetcher(
             config=self.config,
             url_utils=self.url_utils,
@@ -81,27 +70,6 @@ class AsyncCrawlController(AsyncController):
         )
         self.link_processor = LinkProcessorService()
         self.robots_txt_service: Optional[RobotsTxtService] = None
-        self.worker_manager: Optional[AdaptiveWorkerManager] = None
-        self.progress_manager: Optional[ProgressManager] = None
-
-        # Configuration
-        self.max_pages_to_crawl: Optional[int] = None
-        self.flush_interval = config_manager.get_nested("crawler.flush_interval", 10)
-        self.skip_save = config_manager.get_nested("crawler.skip_save", False)
-        self.respect_robots_meta_tags = config_manager.get_nested("crawler.robots_meta_tags", True)
-        self.respect_nofollow = config_manager.get_nested("crawler.link_nofollow", True)
-
-        # Regex patterns for Turbo Meta Checks (Pre-compiled for performance)
-        # Matches: <meta ... name="robots" ... content="...noindex...">
-        self._meta_robots_pattern = re.compile(
-            r'<meta[^>]+name=["\']robots["\'][^>]*content=["\'][^"\']*noindex[^"\']*["\']',
-            re.IGNORECASE | re.DOTALL
-        )
-        # Matches: <meta ... content="...noindex..." ... name="robots">
-        self._meta_robots_pattern_alt = re.compile(
-            r'<meta[^>]+content=["\'][^"\']*noindex[^"\']*["\'][^>]*name=["\']robots["\']',
-            re.IGNORECASE | re.DOTALL
-        )
 
         # State & Buffers
         self.pages_crawled = 0
@@ -114,238 +82,123 @@ class AsyncCrawlController(AsyncController):
         self.external_links_buffer: List[Link] = []
         self.requests_buffer: List[Request] = []
 
-        # Concurrency Control
-        self._flusher_task: Optional[asyncio.Task] = None
+        # Config van config_manager
+        self.flush_interval = config_manager.get_nested("crawler.flush_interval", 10)
+        self.skip_save = config_manager.get_nested("crawler.skip_save", False)
+        self.respect_robots_meta_tags = config_manager.get_nested("crawler.robots_meta_tags", True)
+        self.respect_nofollow = config_manager.get_nested("crawler.link_nofollow", True)
+
+        self.stop_crawl_event = asyncio.Event()
         self.flush_lock = asyncio.Lock()
         self.crawl_count_lock = asyncio.Lock()
 
-    def _is_noindex(self, content: str) -> bool:
+    async def _process_sitemap(self, xml_content: str, source_url: str):
         """
-        TURBO CHECK: Scans only the first ~5KB of the HTML for noindex tags.
-        Regex is significantly faster than BeautifulSoup for this specific check.
-
-        Args:
-            content: The HTML content string.
-
-        Returns:
-            True if a 'noindex' directive is found, False otherwise.
+        Extraheert URL's uit een XML sitemap en voegt ze toe aan de in-memory queue.
         """
-        if not content:
-            return False
+        try:
+            # Namespace voor sitemaps (vrijwel altijd standaard)
+            ns = '{http://www.sitemaps.org/schemas/sitemap/0.9}'
+            stream = io.BytesIO(xml_content.encode('utf-8'))
+            newly_queued = 0
 
-        # We only check the head region (first 5120 characters are usually sufficient)
-        head_sample = content[:5120]
+            for event, elem in ET.iterparse(stream, events=('end',)):
+                if elem.tag == f'{ns}loc':
+                    loc = elem.text.strip()
+                    if loc not in self.visited:
+                        self.visited.add(loc)
+                        await self.queue.put(loc)
+                        newly_queued += 1
+                elem.clear()
 
-        if self._meta_robots_pattern.search(head_sample):
-            return True
-        if self._meta_robots_pattern_alt.search(head_sample):
-            return True
-
-        return False
-
-    async def _flush_buffer(self) -> None:
-        """
-        Atomically flushes all data buffers to the database via a thread pool.
-        This ensures database I/O does not block the main asyncio event loop.
-        """
-        async with self.flush_lock:
-            try:
-                loop = asyncio.get_running_loop()
-                buffers_to_flush = [
-                    ("pages", self.pages_buffer),
-                    ("internal_links", self.internal_links_buffer),
-                    ("external_links", self.external_links_buffer),
-                    ("requests", self.requests_buffer),
-                ]
-                tasks = []
-
-                for name, buf in buffers_to_flush:
-                    if buf:
-                        # Handle dry run mode
-                        if self.skip_save:
-                            buf.clear()
-                            continue
-
-                        data_copy = buf.copy()
-                        buf.clear()
-
-                        # Use a closure/wrapper to bind arguments correctly for the thread executor
-                        def save_task(pid=self.project_id, n=name, d=data_copy):
-                            try:
-                                logger.debug(f"saving with: {n}")
-                                self.db.save(pid, n, d)
-                            except Exception as e:
-                                logger.error(f"DB Save error for {n}: {e}")
-
-                        # Offload to thread pool
-                        tasks.append(loop.run_in_executor(None, save_task))
-
-                if tasks:
-                    await asyncio.gather(*tasks)
-            except RuntimeError:
-                # Loop might be closed during shutdown
-                return
-            except Exception as e:
-                logger.error("Error flushing buffer: %s", e, exc_info=True)
-
-    async def _periodic_flush_task(self, interval_seconds: int) -> None:
-        """
-        Background task that triggers a buffer flush at set intervals.
-
-        Args:
-            interval_seconds: Time in seconds between flush attempts.
-        """
-        while not self.stop_crawl_event.is_set():
-            try:
-                await asyncio.sleep(interval_seconds)
-                # Only flush if there is data
-                if any([self.pages_buffer, self.internal_links_buffer,
-                        self.external_links_buffer, self.requests_buffer]):
-                    await self._flush_buffer()
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error("Periodic flush error: %s", e)
+            if newly_queued > 0:
+                logger.info(f"Sitemap parsed: {newly_queued} URL's toegevoegd vanuit {source_url}")
+                await self._update_progress_bar_total()
+        except Exception as e:
+            logger.error(f"Fout bij parsen sitemap {source_url}: {e}")
 
     async def _process_url(self, url: str) -> Dict[str, Any]:
-        """
-        Fetches and processes a single URL.
-        Designed for maximum throughput with minimal blocking logic.
-
-        Args:
-            url: The URL to process.
-
-        Returns:
-            A dictionary containing the fetch result and status.
-        """
         if self.stop_crawl_event.is_set():
             return {"status": 0, "info": "Stopped"}
 
         try:
-            # 1. Robots.txt check (Lightweight)
-            if self.respect_robots_txt and self.robots_txt_service:
-                if not await self.robots_txt_service.can_fetch(url):
-                    return {"status": 0, "info": "Disallowed"}
-
-            # 2. URL Validation
-            if not self.url_utils.is_valid_link(url):
-                async with self.crawl_count_lock:
-                    self.request_failures += 1
-                return {"status": -1, "error": "Invalid link"}
-
-            # 3. High-Speed Fetch
+            # Fetch de pagina
             fetch_result = await self.page_fetcher.fetch_page(url)
             self._log_request(url, fetch_result)
 
             status = fetch_result.get("status")
             content = fetch_result.get("content")
+            headers = fetch_result.get("headers", {})
 
             if status == 200 and content:
+                # 1. Sitemap Detectie (XML content of URL)
+                is_xml = "xml" in headers.get('Content-Type', '').lower() or url.endswith(".xml")
+                if is_xml:
+                    await self._process_sitemap(content, url)
+                    return fetch_result
 
-                # --- TURBO META ROBOTS CHECK ---
-                # Performs a fast regex scan instead of full DOM parsing
-                if self.respect_robots_meta_tags:
-                    if self._is_noindex(content):
-                        logger.debug("Skipping %s: NoIndex meta tag found (Regex).", url)
-                        return {"status": 0, "info": "Skipped (NoIndex)"}
-                # -------------------------------
+                # 2. Page Filter Toepassen (indien aanwezig)
+                if self.page_filter_class:
+                    soup = BeautifulSoup(content, 'html.parser')
+                    if not self.page_filter_class(soup).apply():
+                        logger.debug(f"Filter: Pagina {url} genegeerd.")
+                        return {"status": 0, "info": "Filtered"}
 
-                # Save Logic
+                # 3. Product Pagina Opslaan
                 async with self.crawl_count_lock:
-                    if (self.max_pages_to_crawl is None or
-                            self.pages_crawled < self.max_pages_to_crawl):
-                        self.pages_crawled += 1
-                        self.pages_buffer.append(
-                            Page(url=url, status_code=status, content=content)
-                        )
+                    self.pages_crawled += 1
+                    self.pages_buffer.append(Page(url=url, status_code=status, content=content))
 
-                        if self.progress_manager:
-                            self.progress_manager.advance(
-                                pages_count=self.pages_crawled,
-                                failures_count=self.request_failures
-                            )
+                    if self.progress_manager:
+                        self.progress_manager.advance(pages_count=self.pages_crawled,
+                                                      failures_count=self.request_failures)
 
-                        if (self.max_pages_to_crawl is not None and
-                                self.pages_crawled >= self.max_pages_to_crawl):
-                            logger.info("Max pages limit reached.")
-                            self.stop_crawl_event.set()
-                    else:
-                        return fetch_result
+                    if self.max_pages_to_crawl and self.pages_crawled >= self.max_pages_to_crawl:
+                        self.stop_crawl_event.set()
 
-                # Link Processing (Only if still running and not in sitemap mode)
-                if not self.stop_crawl_event.is_set() and self.run_mode != "sitemap":
-                    await self._process_links(url, content)
+                # 4. Links verwerken (Database opslag ja, Queue vullen hangt af van run_mode)
+                await self._process_links(url, content)
 
             else:
                 async with self.crawl_count_lock:
                     self.request_failures += 1
 
         except Exception as e:
-            logger.error("Error processing %s: %s", url, e)
-            async with self.crawl_count_lock:
-                self.request_failures += 1
+            logger.error(f"Error processing {url}: {e}")
             return {"status": -99, "error": str(e)}
 
         return fetch_result
 
     async def _process_links(self, source_url: str, html_content: str) -> None:
-        """
-        Extracts links from HTML, applies nofollow logic, and queues valid URLs.
-
-        Args:
-            source_url: The URL of the page where links were found.
-            html_content: The raw HTML content of the page.
-        """
-        newly_queued = 0
+        """Extraheert links. In sitemap-mode vullen we de queue NIET."""
         try:
-            (internal, external) = self.link_processor.process_links(
-                html_content=html_content,
-                source_url=source_url,
-                project_id=self.project_id
-            )
+            (internal, external) = self.link_processor.process_links(html_content, source_url, self.project_id)
 
-            # --- PROCESS INTERNAL LINKS ---
             if internal:
                 internal_objs = []
                 for link_data in internal:
-                    try:
-                        link_obj = Link(**link_data)
+                    link_obj = Link(**link_data)
+                    internal_objs.append(link_obj)
 
-                        # --- TURBO NOFOLLOW CHECK ---
-                        # Checks if 'nofollow' exists in the rel attribute string representation
-                        is_nofollow = False
-                        if self.respect_nofollow and link_obj.rel:
-                            if "nofollow" in str(link_obj.rel).lower():
-                                is_nofollow = True
-
-                        # Buffer for DB storage regardless of nofollow status (for audit purposes)
-                        internal_objs.append(link_obj)
-
-                        # Queue only if NOT nofollow and unique
-                        if not is_nofollow:
-                            t_url = str(link_obj.target_url)
-                            if not self.stop_crawl_event.is_set() and t_url not in self.visited:
-                                self.visited.add(t_url)
-                                await self.queue.put(t_url)
-                                newly_queued += 1
-
-                    except ValidationError:
-                        pass
+                    # KEY: Alleen URL's aan de queue toevoegen als we in discovery mode zijn
+                    if self.run_mode == "discovery":
+                        t_url = str(link_obj.target_url)
+                        if t_url not in self.visited and not self.stop_crawl_event.is_set():
+                            self.visited.add(t_url)
+                            await self.queue.put(t_url)
 
                 self.internal_links_buffer.extend(internal_objs)
 
-            # --- PROCESS EXTERNAL LINKS ---
             if external:
-                self.external_links_buffer.extend(
-                    [Link(**ld) for ld in external if isinstance(ld, dict)]
-                )
+                self.external_links_buffer.extend([Link(**ld) for ld in external])
 
-            # Update progress bar total if running without a hard limit
-            if newly_queued > 0:
+            if self.run_mode == "discovery":
                 await self._update_progress_bar_total()
 
         except Exception as e:
-            logger.debug("Link processing error for %s: %s", source_url, e)
+            logger.debug(f"Link processing error: {e}")
+
+    # ... (Rest van de controller methodes zoals run, shutdown, etc.) ...
 
     async def _update_progress_bar_total(self) -> None:
         """Dynamically adjusts the progress bar total based on discovered links."""

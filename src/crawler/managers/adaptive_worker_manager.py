@@ -1,135 +1,142 @@
-# src/crawler/managers/adaptive_worker_manager.py
+"""
+Adaptive Worker Manager
+Handles a pool of asynchronous workers with support for pausing and stopping.
+"""
+
 import asyncio
 import logging
-from typing import Callable, Awaitable
+from typing import Callable, Awaitable, Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
 
 class AdaptiveWorkerManager:
     """
-    Manages a pool of asynchronous workers to process items from a queue.
-    Supports stopping (shutdown) and pausing (temporary halt e.g. for 429s).
+    Manages a pool of asynchronous workers to process items from an asyncio.Queue.
+
+    Supports graceful shutdown via stop_event and temporary execution halts
+    (e.g., for 429 rate-limiting backoff) via pause_event.
     """
 
-    def __init__(self,
-                 work_coro: Callable[[any], Awaitable[None]],
-                 queue: asyncio.Queue,
-                 concurrency: int,
-                 stop_event: asyncio.Event,
-                 pause_event: asyncio.Event = None):
+    def __init__(
+            self,
+            work_coro: Callable[[Any], Awaitable[None]],
+            queue: asyncio.Queue,
+            concurrency: int,
+            stop_event: asyncio.Event,
+            pause_event: Optional[asyncio.Event] = None
+    ):
         """
-        Initializes the WorkerManager.
+        Initialize the AdaptiveWorkerManager.
 
         Args:
-            work_coro: The async function to execute for each item.
-            queue: The asyncio.Queue to pull items from.
-            concurrency: The number of parallel workers.
-            stop_event: An event to signal workers to shut down.
-            pause_event: An event to signal workers to pause temporarily (e.g. 429 backoff).
-                         If not provided, creates an internal event set to True (always run).
+            work_coro: Asynchronous function to execute for each queue item.
+            queue: The queue to retrieve items from.
+            concurrency: Number of parallel worker tasks to spawn.
+            stop_event: Signal to shut down all workers.
+            pause_event: Signal to temporarily halt processing.
+                         If None, an internal event is created (defaults to running).
         """
         self.work_coro = work_coro
         self.queue = queue
-        self.stop_event = stop_event
         self.concurrency = concurrency
+        self.stop_event = stop_event
 
-        # Als er geen pause_event wordt meegegeven, maken we er een die standaard op 'Groen' staat.
+        # Initialize pause_event. If not provided, default to 'True' (Always Running).
         if pause_event is None:
             self.pause_event = asyncio.Event()
             self.pause_event.set()
         else:
             self.pause_event = pause_event
 
-        self._tasks: list[asyncio.Task] = []
-        self._has_started = False
+        self._tasks: List[asyncio.Task] = []
+        self._has_started: bool = False
 
     def is_idle(self) -> bool:
-        """Checks if all workers have finished their tasks."""
+        """Check if all spawned worker tasks have finished execution."""
         return all(task.done() for task in self._tasks)
 
-    async def run(self):
-        """Starts the worker pool and waits for them to complete."""
+    async def run(self) -> None:
+        """
+        Start the worker pool and wait for all tasks to complete.
+        """
         if self._has_started:
             logger.warning("WorkerManager already running.")
             return
 
         self._has_started = True
-        logger.debug(f"Starting {self.concurrency} workers...")
+        logger.debug("Starting %d workers...", self.concurrency)
 
         self._tasks = [
             asyncio.create_task(self._worker_loop(f"Worker-{i + 1}"))
             for i in range(self.concurrency)
         ]
 
-        # Wacht tot alle worker-taken daadwerkelijk zijn voltooid.
+        # Wait for all worker tasks to finish or raise exceptions
         await asyncio.gather(*self._tasks, return_exceptions=True)
-        logger.debug("All workers have stopped and gathered.")
+        logger.debug("All workers have been shut down and gathered.")
 
-    async def _worker_loop(self, name: str):
+    async def _worker_loop(self, name: str) -> None:
         """
-        The main loop for an individual worker task.
-        Respects stop_event for shutdown and pause_event for temporary halts.
+        Internal worker loop for individual task execution.
+
+        Continuously checks the stop_event for shutdown and pause_event for
+        throttling before attempting to pull from the queue.
         """
-        logger.debug(f"[{name}] Started.")
+        logger.debug("[%s] Started.", name)
 
         while True:
-            # 1. CHECK STOP EVENT (Prioriteit 1)
+            # 1. PRIORITY CHECK: Shutdown
             if self.stop_event.is_set():
                 break
 
-            # 2. CHECK PAUSE EVENT (Prioriteit 2)
-            # Als de slagboom dicht is (pause_event.clear()), wachten we hier.
+            # 2. SECONDARY CHECK: Throttling / Pause
+            # If pause_event is cleared (e.g., by a 429 handler), workers wait here.
             if not self.pause_event.is_set():
-                # logger.debug(f"[{name}] Paused by pause_event...") # Optioneel, kan veel spam geven
                 try:
                     await self.pause_event.wait()
-                    # Als we wakker worden, checken we meteen of we niet alsnog moeten stoppen
+                    # Re-check shutdown immediately after waking up
                     if self.stop_event.is_set():
                         break
-                    # logger.debug(f"[{name}] Resumed.")
                 except asyncio.CancelledError:
                     break
 
-            # 3. VERWERK QUEUE
+            # 3. QUEUE PROCESSING
             item = None
             try:
-                # Wacht maximaal 0.5s op een item. Dit zorgt dat we regelmatig
-                # de stop_event en pause_event opnieuw controleren als de queue leeg is.
+                # Use a short timeout to allow frequent re-checks of stop/pause events
                 item = await asyncio.wait_for(self.queue.get(), timeout=0.5)
 
             except asyncio.TimeoutError:
-                # Geen item, check condities opnieuw in volgende iteratie
+                # No item in queue, restart loop to check conditions
                 continue
 
             except asyncio.CancelledError:
-                logger.debug(f"[{name}] Task cancelled.")
+                logger.debug("[%s] Task cancelled during queue retrieval.", name)
                 break
 
             except Exception as e:
-                logger.error(f"[{name}] Unexpected error during queue.get(): {e}", exc_info=True)
+                logger.error("[%s] Unexpected queue error: %s", name, e, exc_info=True)
                 await asyncio.sleep(0.5)
                 continue
 
-            # Als we hier zijn, hebben we een item en moeten we aan het werk
+            # 4. EXECUTE COROUTINE
             try:
                 await self.work_coro(item)
 
             except asyncio.CancelledError:
-                logger.debug(f"[{name}] Cancelled during work_coro.")
+                logger.debug("[%s] Task cancelled during execution of work_coro.", name)
+                # Cleanup: ensure task_done is called if the item was retrieved
                 if item is not None:
                     self.queue.task_done()
                 break
 
             except Exception:
-                logger.exception(f"[{name}] Unhandled exception processing item {str(item)}.")
-                # Zelfs bij een crash moeten we task_done aanroepen
-                if item is not None:
-                    self.queue.task_done()
+                logger.exception("[%s] Unhandled exception processing item: %s", name, item)
 
             finally:
-                # Markeer taak als gedaan, zodat queue.join() werkt
+                # Always mark task as done to avoid blocking queue.join()
                 if item is not None:
                     self.queue.task_done()
 
-        logger.debug(f"[{name}] Stopped.")
+        logger.debug("[%s] Stopped.", name)
